@@ -1,9 +1,9 @@
 ---
 title: Events
-updated_at: 2026-10-11T19:29:59+02:00
+updated_at: 2026-10-11T19:34:45+02:00
 generator: run-day v1
 template: events v1
-entries: 30
+entries: 31
 ---
 # Events
 
@@ -11,9 +11,14 @@ Things that happened to systems, models and features, newest first. Generated fr
 run_day.py; re-running a day replaces that day's entries, so edit the prompt rather than this file.
 
 ### 2026-10-11 · Claude Code global settings (~/.claude/settings.json) · cleanupPeriodDays set to 365
-- impact: Chat transcripts are now retained for 1 year instead of the default 30 days; other settings were preserved.
+- impact: Chat transcripts are now retained for 1 year instead of the default 30 days; other settings preserved.
 - project: claude-memory
-- sessions: 52063c70, f5faaff3
+- sessions: 52063c70, eb068b26, f5faaff3
+
+### 2026-10-11 · claude-memory repo · initialized as a git repository with an initial commit on main
+- impact: 65 files committed; __pycache__ excluded via .gitignore; commit message has no Co-Authored-By trailer.
+- project: claude-memory
+- sessions: 52063c70, eb068b26, f5faaff3
 
 ### 2026-10-04 · plot-payments skill · created under .claude/skills/plot-payments from the create-python-skill template, with plotting logic ported from scripts/plot_payments_2026.py, pinned requirements and SKILL.md; test-run successfully
 - impact: Skill runs and writes a PNG plus manifest to outputs/plot-payments/. Several parallel sessions built it independently with different test data. The final run on real data (data/payments_2026.parquet) passed validate.py (ok: true).

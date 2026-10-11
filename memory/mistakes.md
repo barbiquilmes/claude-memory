@@ -1,9 +1,9 @@
 ---
 title: Mistakes
-updated_at: 2026-10-11T19:29:55+02:00
+updated_at: 2026-10-11T19:34:45+02:00
 generator: rules-writer v1
 template: mistakes v1
-rules: 5
+rules: 6
 ---
 # Mistakes
 
@@ -50,3 +50,11 @@ change `status` by hand: `proposed` → `approved` (exported to mistakes.claude.
 - status: proposed
 - occurrences: 1
 - evidence: 2026-10-04
+
+### MS-006 · Don't add a Co-Authored-By trailer to commit messages
+- instead: Write plain commit messages with no Claude co-author line unless the user asks for one.
+- why: The user rejected the commit tool call and it had to be redone without the trailer.
+- scope: global
+- status: proposed
+- occurrences: 1
+- evidence: 2026-10-11

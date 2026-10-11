@@ -1,9 +1,9 @@
 ---
 title: Not-to-do
-updated_at: 2026-10-11T19:29:55+02:00
+updated_at: 2026-10-11T19:34:45+02:00
 generator: rules-writer v1
 template: nottodo v2
-rules: 6
+rules: 7
 ---
 # Not-to-do
 
@@ -58,3 +58,11 @@ IDs, evidence and occurrences are maintained by the script.
 - status: proposed
 - occurrences: 1
 - evidence: 2026-10-04
+
+### NT-007 · Don't add Co-Authored-By trailers to commit messages
+- instead: Write plain commit messages with no Co-Authored-By line
+- why: The user rejected the commit tool call and said to remove the Co-Authored-By note.
+- scope: global
+- status: proposed
+- occurrences: 1
+- evidence: 2026-10-11

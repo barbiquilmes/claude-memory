@@ -1,9 +1,9 @@
 ---
 title: User style
-updated_at: 2026-10-11T19:29:55+02:00
+updated_at: 2026-10-11T19:34:45+02:00
 generator: rules-writer v1
 template: userstyle v1
-rules: 13
+rules: 14
 ---
 # User style
 
@@ -114,3 +114,11 @@ change `status` by hand: `proposed` → `approved` (exported to userstyle.claude
 - status: proposed
 - occurrences: 4
 - evidence: 2026-10-04 (4)
+
+### US-014 · The user does not want Co-Authored-By trailers (Claude attribution) in git commit messages
+- apply: Write commit messages without any Co-Authored-By or Claude attribution lines.
+- why: The user rejected a commit command and said to remove the Co-Authored-By note.
+- scope: global
+- status: proposed
+- occurrences: 1
+- evidence: 2026-10-11

@@ -188,5 +188,15 @@
       "2026-10-04": 1
     },
     "explicit": false
+  },
+  "dont read a file that may not exist just to check it before writing": {
+    "rule": "Don't Read a file that may not exist just to check it before writing",
+    "instead": "List the directory or use Glob first, or Write the file directly if you are creating it.",
+    "why": "The Read of a nonexistent MEMORY.md returned an error and wasted a tool call.",
+    "scope": "global",
+    "evidence": {
+      "2026-10-11": 1
+    },
+    "explicit": false
   }
 }

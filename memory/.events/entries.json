@@ -245,10 +245,18 @@
     {
       "system": "Claude Code global settings (~/.claude/settings.json)",
       "what": "cleanupPeriodDays set to 365",
-      "impact": "Chat transcripts are now retained for 1 year instead of the default 30 days; other settings were preserved.",
+      "impact": "Chat transcripts are now retained for 1 year instead of the default 30 days; other settings preserved.",
       "project": "claude-memory",
       "date": "2026-10-11",
-      "sessions": "52063c70, f5faaff3"
+      "sessions": "52063c70, eb068b26, f5faaff3"
+    },
+    {
+      "system": "claude-memory repo",
+      "what": "initialized as a git repository with an initial commit on main",
+      "impact": "65 files committed; __pycache__ excluded via .gitignore; commit message has no Co-Authored-By trailer.",
+      "project": "claude-memory",
+      "date": "2026-10-11",
+      "sessions": "52063c70, eb068b26, f5faaff3"
     }
   ]
 }
