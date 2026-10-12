@@ -3,63 +3,74 @@
 # dependencies = ["anthropic>=0.40"]
 # ///
 """
-run_day.py: one day of Claude Code logs → six memory outputs.
+run_day.py: one day of Claude Code logs -> two memory outputs.
 
     uv run scripts/run_day.py                       # today
     uv run scripts/run_day.py --last 30             # first run / backfill: every active day in the last 30
     uv run scripts/run_day.py --day 2026-10-04
-    uv run scripts/run_day.py --only events,investigations
+    uv run scripts/run_day.py --only events
     uv run scripts/run_day.py --dry-run             # what would run; no API calls, no writes
 
-Each extractor reads the SAME redacted transcript of the day (not the journal), with its own prompt
-and template from assets/:
+Each extractor reads the SAME redacted transcript of the day, with its own prompt from assets/,
+and writes one small .md file per entry under memory/<kind>/ — the same frontmatter+body shape
+Claude Code's own native memory uses (name, description, metadata.type + a body). Nothing here
+invents a different format; sync_memory.py later copies these files as-is, the same way it copies
+native memory.
 
-    journal          memory/journal/YYYY-MM-DD.md     one file per day
-    events           memory/events.md                 running log, newest first
-    investigations   memory/investigations.md         running log, newest first
-    userstyle        memory/userstyle.md              curated rules (US-…), you approve
-    nottodo          memory/nottodo.md                curated rules (NT-…), you approve
-    mistakes         memory/mistakes.md               curated rules (MS-…), you approve
+    events           memory/events/YYYY-MM-DD--event-<hash>.md
+    investigations   memory/investigations/YYYY-MM-DD--investigation-<hash>.md
 
-A day/extractor pair is skipped when its transcript, prompt, template and model are unchanged
-(--force to redo). Re-running a day replaces that day's entries and counts, never doubles them.
-Before any running file changes, a timestamped copy goes to memory/history/<name>/ and a line is
-appended to memory/history/<name>.log. Approved rules are exported to memory/<kind>.claude.md.
+Preferences and corrections are not extracted here — those come from Claude Code's own native
+memory (~/.claude/projects/*/memory/), synced separately by sync_memory.py.
+
+Nothing is extracted on inference alone: a day/extractor only calls the model if the user
+explicitly asked for it in that day's transcript ("log this event", "store this investigation",
+or a close variant — see TRIGGERS below). No trigger, no API call, and any previously-written
+entries for that day are removed. This is deliberate: letting a model judge "is this a real
+company event" over a whole day's transcript produces false positives (it will extract Claude
+Code skill-building as if it were a production deploy). Requiring an explicit ask is cheaper and
+more reliable than a better prompt.
+
+A day/extractor pair is otherwise skipped when its transcript, prompt and model are unchanged
+(--force to redo). Re-running a day deletes and rewrites that day's files for that extractor,
+never doubles them. No separate history/backup mechanism: the files live in this git repo, so
+`git log -p` is the history.
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
-import hashlib
 import json
 import os
 import re
-import shutil
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import daily_writer as dw  # noqa: E402
-import rules_writer as rw  # noqa: E402
+import transcripts as tx  # noqa: E402
+import memory_format as mf  # noqa: E402
 
-GENERATOR = "run-day v1"
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = Path(os.environ.get("MEMORY_ROOT", REPO / "memory")).expanduser()
 DEFAULT_ASSETS = REPO / "assets"
-DEFAULT_MODEL = os.environ.get("MEMORY_MODEL", "claude-sonnet-5-5")
+DEFAULT_MODEL = os.environ.get("MEMORY_MODEL", "claude-haiku-4-5-20251001")
 MAX_OUTPUT_TOKENS = 16_000
-EXTRACTORS = ("journal", "events", "investigations", "userstyle", "nottodo", "mistakes")
-LOGS = ("events", "investigations")
-RULES = ("userstyle", "nottodo", "mistakes")
+EXTRACTORS = ("events", "investigations")
+
+# an extractor only runs on a day if the user explicitly asked for it, e.g. "log this event" /
+# "store this investigation" (verb and noun within a short distance, same user message)
+VERB = r"(?:log|save|store|record|remember|note)"
+USER_LINE = re.compile(r"^USER: (.*)$", re.M)
+TRIGGERS = {
+    "events": re.compile(rf"\b{VERB}\b[^.\n]{{0,30}}\bevents?\b", re.I),
+    "investigations": re.compile(rf"\b{VERB}\b[^.\n]{{0,30}}\binvestigations?\b", re.I),
+}
 
 
-def now() -> dt.datetime:
-    return dt.datetime.now().astimezone()
-
-
-def short_hash(*parts: str) -> str:
-    return hashlib.sha256("\x00".join(parts).encode()).hexdigest()[:16]
+def has_trigger(transcript: str, name: str) -> bool:
+    pattern = TRIGGERS[name]
+    return any(pattern.search(line) for line in USER_LINE.findall(transcript))
 
 
 # ── generic structured call ─────────────────────────────────────────────────
@@ -72,12 +83,10 @@ def record_tool(item_props: dict, required: list[str]) -> dict:
 S = {"type": "string"}
 TOOLS = {
     "events": record_tool({"system": S, "what": S, "impact": S, "project": S}, ["system", "what"]),
-    "investigations": record_tool({"question": S, "approach": S, "findings": S, "conclusion": S,
+    "investigations": record_tool({"question": S, "entity": S, "metric": S, "direction": S, "approach": S,
+                                   "findings": S, "conclusion": S,
                                    "status": {"type": "string", "enum": ["open", "closed"]}, "project": S},
                                   ["question", "status"]),
-    "rules": record_tool({"match": {"type": ["string", "null"]}, "rule": S, "instead": S, "why": S,
-                          "scope": S, "count": {"type": "integer"}, "explicit": {"type": "boolean"}},
-                         ["match", "count", "explicit"]),
 }
 
 
@@ -98,126 +107,23 @@ def ask_items(client, model: str, system: str, user: str, tool: dict) -> list[di
     return [i for i in json.loads(raw[start:end + 1]) if isinstance(i, dict)]
 
 
-# ── files with history ──────────────────────────────────────────────────────
-def save_with_history(out: Path, path: Path, new_text: str, name: str, note: str) -> bool:
-    old = path.read_text() if path.exists() else ""
-    strip = lambda t: re.sub(r"updated_at: .*", "", t)  # noqa: E731
-    if strip(old) == strip(new_text):
-        return False
-    stamp = now().strftime("%Y-%m-%dT%H%M%S")
-    history = out / "history"
-    backup = "-"
-    if old:
-        (history / name).mkdir(parents=True, exist_ok=True)
-        backup, n = f"{name}.{stamp}.md", 1
-        while (history / name / backup).exists():  # several changes in the same second
-            n += 1
-            backup = f"{name}.{stamp}-{n}.md"
-        shutil.copy2(path, history / name / backup)
-    tmp = path.with_suffix(".md.tmp")
-    tmp.write_text(new_text)
-    tmp.replace(path)
-    history.mkdir(parents=True, exist_ok=True)
-    with (history / f"{name}.log").open("a") as log:
-        log.write(f"{now().isoformat(timespec='seconds')} {note} backup={backup}\n")
-    return True
-
-
-class LogTemplate:
-    """Running-log file (events, investigations): front matter + header + one block per entry."""
-
-    def __init__(self, assets: Path, name: str):
-        raw = (assets / "templates" / f"{name}.md").read_text()
-        m = re.match(r"^(---\n.*?\n---\n)(.*?)<!-- entry -->\n(.*?)<!-- /entry -->", raw, re.S)
-        if not m:
-            sys.exit(f"templates/{name}.md needs front matter, a header, and an <!-- entry --> block")
-        self.raw, self.front, self.header, self.entry = raw, m.group(1), m.group(2), m.group(3)
-
-    def render(self, by_day: dict[str, list[dict]]) -> str:
-        entries = [e for day in sorted(by_day, reverse=True) for e in by_day[day]]
-        fm = (self.front.replace("{{updated_at}}", now().isoformat(timespec="seconds"))
-              .replace("{{generator}}", GENERATOR).replace("{{entries}}", str(len(entries))))
-        out = [fm + self.header.rstrip() + "\n"]
-        for e in entries:
-            block = re.sub(r"\{\{(\w+)\}\}", lambda m: " ".join(str(e.get(m.group(1)) or "—").split()), self.entry)
-            out.append("\n" + block.rstrip() + "\n")
-        return "".join(out)
-
-
-# ── extractors (each returns a result to apply; applying is done sequentially) ─
-def run_journal(ctx, day, sessions, transcript):
-    jassets = ctx["jassets"]
-    projects = sorted({s.project for s in sessions.values()})
-    body = dw.summarize(ctx["client"], ctx["model"], jassets.prompt, day, transcript)
-    problems = jassets.check_body(body, projects)
-    if problems:
-        body = dw.summarize(ctx["client"], ctx["model"], jassets.prompt, day, transcript, "; ".join(problems))
-        problems = jassets.check_body(body, projects)
-    if problems:
-        raise ValueError("journal doesn't match the template: " + "; ".join(problems))
-    return body
-
-
-def run_items(ctx, name, day, transcript, tool, existing: str | None = None):
+# ── extractor ─────────────────────────────────────────────────────────────
+def run_items(ctx, name, day, transcript) -> list[dict]:
     prompt = (ctx["assets"] / "prompts" / f"{name}.md").read_text()
-    user = (f"EXISTING RULES:\n{existing}\n\n" if existing is not None else "") + \
-           f"DATE: {day}\n\nTRANSCRIPTS (redacted, trimmed):\n{transcript}"
-    return ask_items(ctx["client"], ctx["model"], prompt, user, tool)
+    user = f"DATE: {day}\n\nTRANSCRIPTS (redacted, trimmed):\n{transcript}"
+    return ask_items(ctx["client"], ctx["model"], prompt, user, TOOLS[name])
 
 
-def apply_journal(ctx, day, sessions, body, source_hash):
-    jassets = ctx["jassets"]
-    values = {
-        "date": day, "projects": sorted({s.project for s in sessions.values()}), "sessions": len(sessions),
-        "session_ids": sorted(sessions), "titles": [s.title for s in sessions.values() if s.title],
-        "entrypoints": sorted({s.entrypoint for s in sessions.values()}),
-        "user_messages": sum(s.user_msgs for s in sessions.values()),
-        "tool_errors": sum(s.tool_errors for s in sessions.values()),
-        "interrupts": sum(s.interrupts for s in sessions.values()),
-        "claude_minutes": round(sum(s.duration_ms for s in sessions.values()) / 60000),
-        "source_hash": source_hash, "generated_at": now().isoformat(timespec="seconds"),
-        "generator": GENERATOR, "model": ctx["model"],
-    }
-    path = ctx["out"] / "journal" / f"{day}.md"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".md.tmp")
-    tmp.write_text(jassets.render_front_matter(values) + body + "\n")
-    tmp.replace(path)
-
-
-def apply_log(ctx, name, day, sessions, items):
-    store_path = ctx["out"] / f".{name}" / "entries.json"
-    store = json.loads(store_path.read_text()) if store_path.exists() else {}
-    sids = ", ".join(sorted(s[:8] for s in sessions))
-    store[day] = [{**i, "date": day, "sessions": sids} for i in items]
-    if not store[day]:
-        del store[day]
-    store_path.parent.mkdir(parents=True, exist_ok=True)
-    store_path.write_text(json.dumps(store, indent=2, ensure_ascii=False))
-    text = LogTemplate(ctx["assets"], name).render(store)
-    save_with_history(ctx["out"], ctx["out"] / f"{name}.md", text, name, f"day={day} entries={len(items)}")
-
-
-def load_rules(ctx, kind):
-    tpl = rw.Template(ctx["assets"], kind)
-    path = ctx["out"] / f"{kind}.md"
-    return tpl, tpl.parse(path.read_text() if path.exists() else "", rw.KINDS[kind]["prefix"])
-
-
-def apply_rules(ctx, kind, day, items):
-    cfg = rw.KINDS[kind]
-    tpl, rules = load_rules(ctx, kind)
-    cand_path = ctx["out"] / f".{kind}" / "candidates.json"
-    candidates = json.loads(cand_path.read_text()) if cand_path.exists() else {}
-    findings = [{**i, "date": day} for i in items]
-    new, updated = rw.merge(rules, candidates, findings, {day}, cfg["prefix"])
-    save_with_history(ctx["out"], ctx["out"] / f"{kind}.md", tpl.render(rules), kind,
-                      f"day={day} new={','.join(new) or '-'} updated={','.join(updated) or '-'} "
-                      f"waiting={len(candidates)}")
-    rw.export_approved(rules, ctx["out"] / f"{kind}.claude.md", cfg)
-    cand_path.parent.mkdir(parents=True, exist_ok=True)
-    cand_path.write_text(json.dumps(candidates, indent=2, ensure_ascii=False))
-    return new, updated
+def apply_entries(ctx, name, day, sessions, items):
+    out_dir = ctx["out"] / name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for p in out_dir.glob(f"{day}--*.md"):  # re-running a day replaces its files, never doubles them
+        p.unlink()
+    sids = ", ".join(sorted(sessions))
+    for i in items:
+        entry = {**i, "timestamp": day, "sessions": sids}
+        fname, text = mf.RENDER[name](entry)
+        (out_dir / f"{day}--{fname}.md").write_text(text)
 
 
 # ── main ────────────────────────────────────────────────────────────────────
@@ -239,8 +145,8 @@ def main() -> int:
     if bad:
         sys.exit(f"unknown extractor(s): {', '.join(bad)}")
 
-    jassets = dw.Assets(args.assets)
-    days, warnings, _ = dw.load_days(jassets)
+    aliases = tx.Aliases(args.assets)
+    days, warnings, _ = tx.load_days(aliases)
     for w in warnings:
         print(f"! {w}", file=sys.stderr)
     today = dt.date.today()
@@ -253,13 +159,11 @@ def main() -> int:
     state_path = args.out / ".run" / "state.json"
     state = json.loads(state_path.read_text()) if state_path.exists() else {}
     fingerprints = {}
-    for name in only:  # prompt + template + model: a change re-runs that extractor
-        parts = [(args.assets / "prompts" / f"{name if name != 'journal' else 'daily'}.md").read_text(),
-                 (args.assets / "templates" / f"{name if name != 'journal' else 'daily'}.md").read_text(),
-                 args.model]
-        fingerprints[name] = short_hash(*parts)
+    for name in only:  # prompt + model: a change re-runs that extractor
+        parts = [(args.assets / "prompts" / f"{name}.md").read_text(), args.model]
+        fingerprints[name] = mf.short_hash(*parts)
 
-    ctx = {"out": args.out, "assets": args.assets, "model": args.model, "jassets": jassets, "client": None}
+    ctx = {"out": args.out, "assets": args.assets, "model": args.model, "client": None}
     if not args.dry_run:
         if not os.environ.get("ANTHROPIC_API_KEY"):
             print("ANTHROPIC_API_KEY is not set (use --dry-run to test without it).", file=sys.stderr)
@@ -273,57 +177,51 @@ def main() -> int:
             print(f"{day}: no sessions")
             continue
         sessions = days[day]
-        transcript = dw.render_day(sessions)
-        todo = {}
+        transcript = tx.render_day(sessions)
+        todo, untriggered = {}, []
         for name in only:
-            h = short_hash(transcript, fingerprints[name])
+            if not has_trigger(transcript, name):
+                state.get(name, {}).pop(day, None)
+                untriggered.append(name)
+                continue
+            h = mf.short_hash(transcript, fingerprints[name])
             if args.force or state.get(name, {}).get(day) != h:
                 todo[name] = h
-        if not todo:
-            print(f"{day}: all up to date")
-            continue
-        print(f"{day}: {len(sessions)} session(s), ~{len(transcript) // 4:,} tokens → {', '.join(todo)}")
         if args.dry_run:
+            if todo:
+                print(f"{day}: {len(sessions)} session(s), ~{len(transcript) // 4:,} tokens → {', '.join(todo)}")
+            elif untriggered:
+                print(f"{day}: no trigger for {', '.join(untriggered)}")
+            else:
+                print(f"{day}: all up to date")
             continue
 
-        jobs = {}
-        with ThreadPoolExecutor(max_workers=len(todo)) as pool:
-            for name in todo:
-                if name == "journal":
-                    jobs[name] = pool.submit(run_journal, ctx, day, sessions, transcript)
-                elif name in LOGS:
-                    jobs[name] = pool.submit(run_items, ctx, name, day, transcript, TOOLS[name])
-                else:
-                    _, rules = load_rules(ctx, name)
-                    existing = "\n".join(f"{r['id']} [{r['status']}, {r['scope']}] {r['rule']} — {r['instead']}"
-                                         for r in rules) or "(none yet)"
-                    jobs[name] = pool.submit(run_items, ctx, name, day, transcript, TOOLS["rules"], existing)
+        for name in untriggered:  # no explicit ask: clear any stale entries, no API call
+            apply_entries(ctx, name, day, sessions, [])
 
-        for name in todo:  # apply sequentially, in a fixed order
-            try:
-                result = jobs[name].result()
-                if name == "journal":
-                    apply_journal(ctx, day, sessions, result, todo[name])
-                    msg = "written"
-                elif name in LOGS:
-                    apply_log(ctx, name, day, sessions, result)
+        if todo:
+            print(f"{day}: {len(sessions)} session(s), ~{len(transcript) // 4:,} tokens → {', '.join(todo)}")
+            jobs = {}
+            with ThreadPoolExecutor(max_workers=len(todo)) as pool:
+                for name in todo:
+                    jobs[name] = pool.submit(run_items, ctx, name, day, transcript)
+
+            for name in todo:  # apply sequentially, in a fixed order
+                try:
+                    result = jobs[name].result()
+                    apply_entries(ctx, name, day, sessions, result)
                     msg = f"{len(result)} entr{'y' if len(result) == 1 else 'ies'}"
-                else:
-                    new, updated = apply_rules(ctx, name, day, result)
-                    msg = f"new {', '.join(new) or '-'} | updated {', '.join(updated) or '-'}"
-                state.setdefault(name, {})[day] = todo[name]
-                print(f"   {name:<15} {msg}")
-            except Exception as e:  # this extractor is retried next run; the others are kept
-                failures += 1
-                print(f"   {name:<15} FAILED: {e}", file=sys.stderr)
+                    state.setdefault(name, {})[day] = todo[name]
+                    print(f"   {name:<15} {msg}")
+                except Exception as e:  # this extractor is retried next run; the others are kept
+                    failures += 1
+                    print(f"   {name:<15} FAILED: {e}", file=sys.stderr)
+        elif untriggered:
+            print(f"{day}: no trigger for {', '.join(untriggered)}")
+
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state_path.write_text(json.dumps(state, indent=2))
 
-    if not args.dry_run:  # status edits take effect even when no day changed
-        for kind in RULES:
-            if kind in only:
-                _, rules = load_rules(ctx, kind)
-                rw.export_approved(rules, args.out / f"{kind}.claude.md", rw.KINDS[kind])
     print(f"\nDone{'' if not failures else f' with {failures} failure(s)'}.")
     return 1 if failures else 0
 

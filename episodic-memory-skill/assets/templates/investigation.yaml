@@ -1,0 +1,21 @@
+# Template: investigation — a fraud-analysis question about a merchant, segment or traffic.
+# Same shape as event.yaml; see the comments there.
+
+folder: investigations
+required: [question]
+description: [question]
+
+meta:
+  model_name: the named model involved, if any
+  merchant_reference: the merchant ID/name involved, if any
+  entity: merchant/BIN/segment, or 'all traffic'
+  metric: the score/rate/feature at the center of it
+  direction: up | down | changed
+  status: open | closed
+
+body:
+  question: the question, as asked
+  approach: how it was/will be investigated
+  findings: what was found so far
+  plan: how this type of questions should be approached next time (skills/tools to invoque in order)
+  conclusion: the answer reached

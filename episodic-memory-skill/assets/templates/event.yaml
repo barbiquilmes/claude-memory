@@ -1,0 +1,26 @@
+# Template: event — a company-level production change (deploy, rollback, rule/threshold
+# change, pipeline broken/fixed, merchant blocked...).
+#
+# type, timestamp and session are always added automatically. Everything else is optional and
+# left out of the file when not given, except the fields listed under `required:` below — those
+# must be non-empty or the write is refused, so an entry can't be logged with no real content.
+# Add, remove or reorder fields here; nothing else needs to change.
+#
+#   folder:      subfolder (locally and in S3) for this type
+#   required:    fields that must be non-empty
+#   description: fields joined with " — " for the one-line description (empty ones skipped)
+#   meta:        short values that go in the frontmatter  (name: help text)
+#   body:        longer text rendered as "**Label:** value" sections (name: help text)
+
+folder: events
+required: [what]
+description: [model_name, what]
+
+meta:
+  model_name: the named model involved, if any
+  features: the feature(s) involved, if any
+  merchant_reference: the merchant ID/name involved, if any
+
+body:
+  what: what happened, short past-tense phrase
+  impact: consequence or status
