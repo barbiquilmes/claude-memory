@@ -1,4 +1,0 @@
-{
-  "_comment": "Map a folder's project name to the name it should have in the journal, e.g. \"llm-app-template\": \"innerlognotes\". Keys starting with _ are ignored.",
-  "claude-skills ": "claude-skills"
-}

@@ -55,9 +55,20 @@ s3://$S3_BUCKET/bsidoruk/agent_episodic_memory/<template folder>/year=YYYY/month
 
 `$S3_BUCKET` falls back to `claude-bsidoruk`.
 
+## Download
+
+To pull every entry back down from S3 (e.g. after `/tmp` was cleared, or on another machine), use this script — don't improvise a raw `aws s3 sync` command:
+
+```bash
+python3 ~/.claude/skills/episodic-memory/scripts/s3_download.py
+```
+
+It syncs into the same local root `main.py` writes to by default (`$MEMORY_ROOT`, or `/tmp/episodic-memory`), so downloaded and locally-written entries end up in one place. Pass `--out <dir>` to land somewhere else instead.
+
 ## Rules
 
 - Pass whatever fields you can infer from the conversation; skip the rest. Only ask the user if a `required` field for that type is genuinely missing.
 - Run the command with the Bash tool, then tell the user in one short line what was saved and where (the script prints the local path and S3 destination).
 - If the S3 upload failed, still report the local save as successful, and say why the push failed.
 - If the conversation describes both an event and an investigation, save both as separate calls.
+- For "download"/"restore"/"pull memories" requests, use `s3_download.py` — never hand-roll an `aws s3 sync`/`cp` command instead.
